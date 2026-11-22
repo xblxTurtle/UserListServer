@@ -72,6 +72,16 @@ describe('HTTP server', () => {
     expect(response.headers.get('access-control-allow-origin')).not.toBeNull();
   });
 
+  it('serves GraphQL at /graphql', () => {
+    expect(new URL(server.url).pathname).toBe('/graphql');
+  });
+
+  it('returns 404 for paths outside /graphql', async () => {
+    const response = await fetch(new URL('/nope', server.url), { method: 'GET' });
+
+    expect(response.status).toBe(404);
+  });
+
   it('returns status 400 for a malformed query', async () => {
     const response = await post({ query: '{ users { id ' });
 

@@ -10,7 +10,7 @@ This is the backend of a full-stack "user list" app: a GraphQL API built with Ap
 
 Node version is pinned in `.nvmrc` (v22.23.2). Run `nvm use` first.
 
-- `npm run dev`: start the server on `http://localhost:4000/` (Apollo Sandbox opens there in a browser) and restart it on any change under `src/`, `.graphql` included. Uses `node --watch-path`, which Node 22 supports only on macOS and Windows. On Linux, use `npm start` or `node --watch src/index.ts` (which misses `.graphql` edits)
+- `npm run dev`: start the server with GraphQL at `http://localhost:4000/graphql` (Apollo Sandbox opens there in a browser) and restart it on any change under `src/`, `.graphql` included. Uses `node --watch-path`, which Node 22 supports only on macOS and Windows. On Linux, use `npm start` or `node --watch src/index.ts` (which misses `.graphql` edits)
 - `npm start`: start the server without watch
 - `npm test`: run all Vitest tests once
 - `npm run codegen`: regenerate types after editing `typeDefs.graphql`
@@ -60,7 +60,7 @@ List every field in the mapper and never spread. A storage-only column then stay
 ## Structure
 
 - `src/index.ts`: entry point. Reads `PORT`, creates one `InMemoryUserRepository(seedUsers)` and calls `startServer`.
-- `src/server.ts`: `startServer({ port, users })` wraps `startStandaloneServer` and returns `{ url, stop }`. The `context` function hands the same repository to every request.
+- `src/server.ts`: `startServer({ port, users })` builds an Express 5 app, mounts Apollo at `/graphql` (`GRAPHQL_PATH`) with `cors()`, `express.json()` and `expressMiddleware` from `@as-integrations/express5`, and returns `{ url, stop }`. `url` is the full GraphQL endpoint. `ApolloServerPluginDrainHttpServer` makes `stop()` close the HTTP server too. The `context` function hands the same repository to every request. Other paths return Express's 404. Add non-GraphQL routes (such as auth) to the same `app`.
 - `src/context.ts`: `AppContext`, which is `{ users: UserRepository }`.
 - `src/schema/typeDefs.graphql`: the schema (SDL). `typeDefs.ts` reads it from disk once at startup.
 - `src/schema/__generated__/types.ts`: generated API types.
@@ -99,12 +99,12 @@ Resolvers depend only on the `UserRepository` interface. To add a database, writ
 - `src/users/InMemoryUserRepository.test.ts`: tests the repository directly.
 - `src/api/userMapper.test.ts`: tests the conversions, including that storage-only and omitted fields are dropped. Its `@ts-expect-error` lines are checked by `npm run typecheck`, not by `npm test`.
 - `src/schema/resolvers.test.ts`: runs real operations through `ApolloServer.executeOperation` with a new repository per test. Narrow the result with `assert(response.body.kind === 'single')`. It also checks what reaches the repository, and calls resolvers directly to check that results are converted.
-- `src/server.test.ts`: starts a real server per test with `startServer({ port: 0, ... })` and sends requests with `fetch`. It covers HTTP status codes, CORS and the context.
+- `src/server.test.ts`: starts a real server per test with `startServer({ port: 0, ... })` and sends requests with `fetch`. It covers HTTP status codes, routing (`/graphql` only), CORS and the context.
 - New behavior is written test-first: add the tests, confirm they fail, then implement.
 
 ## Known limitations
 
-- `startStandaloneServer` lets any origin call the server and cannot be configured. Switch to `expressMiddleware` to restrict origins or use cookies.
+- CORS allows any origin (`cors()` with no options). Restrict `origin` (and set `credentials: true`) before using cookies.
 - Typecheck cannot catch these changes, so check them by hand and with tests:
   - a new optional argument that a resolver ignores, or any new argument on a `User` field (a required operation argument is caught only by the direct resolver calls in `resolvers.test.ts`);
   - a new Subscription type, until it is added to `AppResolvers`;
