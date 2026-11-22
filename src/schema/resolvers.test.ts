@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { ApolloServer } from '@apollo/server';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppContext } from '../context.ts';
 import { resolvers } from './resolvers.ts';
 import { typeDefs } from './typeDefs.ts';
@@ -251,5 +251,66 @@ describe('GraphQL API', () => {
       expect(errorCode(result)).toBe('BAD_USER_INPUT');
       expect(await repo.getById(target.id)).toEqual(target);
     });
+  });
+});
+
+describe('what resolvers pass to the repository', () => {
+  const id = seedUsers[1].id;
+
+  it('createUser stores validated input', async () => {
+    const create = vi.spyOn(repo, 'create');
+    const input = { ...validCreateInput, firstName: ' Kate ', email: 'Kate.Moore@Example.com' };
+    await run(CREATE_USER, { input });
+
+    expect(create.mock.calls).toStrictEqual([[validCreateInput]]);
+  });
+
+  it('createUser does not call the repository with invalid input', async () => {
+    const create = vi.spyOn(repo, 'create');
+    await run(CREATE_USER, { input: { ...validCreateInput, email: 'invalid' } });
+
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('updateUser stores validated input, without the omitted fields', async () => {
+    const update = vi.spyOn(repo, 'update');
+    await run(UPDATE_USER, { id, input: { role: ' admin ' } });
+
+    // toStrictEqual, so omitted fields must not arrive as `undefined` keys.
+    expect(update.mock.calls).toStrictEqual([[id, { role: 'admin' }]]);
+  });
+
+  it('updateUser does not call the repository with null', async () => {
+    const update = vi.spyOn(repo, 'update');
+    await run(UPDATE_USER, { id, input: { role: null } });
+
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
+// Resolvers are called directly here, because GraphQL responses hide a skipped conversion.
+describe('what resolvers return', () => {
+  const { Query, Mutation } = resolvers;
+  const id = seedUsers[1].id;
+  const apiUser = { __typename: 'User' };
+
+  it('users converts every user', async () => {
+    const result = await Query.users({}, {}, { users: repo });
+    expect(result).toStrictEqual(seedUsers.map((user) => ({ ...apiUser, ...user })));
+  });
+
+  it('user converts the user', async () => {
+    const result = await Query.user({}, { id }, { users: repo });
+    expect(result).toStrictEqual({ ...apiUser, ...seedUsers[1] });
+  });
+
+  it('createUser converts the created user', async () => {
+    const result = await Mutation.createUser({}, { input: validCreateInput }, { users: repo });
+    expect(result).toMatchObject(apiUser);
+  });
+
+  it('updateUser converts the updated user', async () => {
+    const result = await Mutation.updateUser({}, { id, input: {} }, { users: repo });
+    expect(result).toMatchObject(apiUser);
   });
 });
