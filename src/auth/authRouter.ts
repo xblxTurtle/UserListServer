@@ -11,7 +11,8 @@ import type { SessionReader } from './session.ts';
  * REST auth routes, mounted under `API_PATH` (`/api`) in server.ts, so the full paths are
  * `/api/login` and `/api/session`:
  * - `POST /login` with JSON `{ username, password }`: 200 `{ username }` and a
- *   session cookie, 401 for wrong credentials, 400 for a malformed body.
+ *   session cookie, 401 for wrong credentials (which also ends an existing
+ *   session), 400 for a malformed body (which leaves it alone).
  * - `GET /session`: 200 `{ username }`, or 401 without a valid session.
  */
 export function createAuthRouter(credentials: CredentialStore, getSession: SessionReader): Router {
@@ -26,12 +27,16 @@ export function createAuthRouter(credentials: CredentialStore, getSession: Sessi
       return;
     }
 
+    const current = await getSession(req, res);
+
     if (!(await credentials.verify(username, password))) {
+      // A failed login ends any existing session, so the client and server agree on "logged out".
+      // Only when there is one: a visitor without a session gets no Set-Cookie at all.
+      if (current.username !== undefined) current.destroy();
       res.status(401).json({ error: 'Invalid username or password' });
       return;
     }
 
-    const current = await getSession(req, res);
     current.username = username;
     // Must run before the response is sent, or the Set-Cookie header is lost.
     await current.save();

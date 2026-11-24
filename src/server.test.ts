@@ -305,6 +305,47 @@ describe('auth routes', () => {
     expect(response.headers.getSetCookie()).toEqual([]);
   });
 
+  function loginWithCookie(body: unknown, cookie: string) {
+    return fetch(new URL(`${API_PATH}/login`, server.url), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** The Set-Cookie header that deletes the session cookie, if the response has one. */
+  function clearingCookie(response: Response): string | undefined {
+    return response.headers
+      .getSetCookie()
+      .find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=;`) && /max-age=0/i.test(c));
+  }
+
+  it.each([
+    ['a wrong password', { username: 'admin', password: 'wrong' }],
+    ['another user with a wrong password', { username: 'demo', password: 'wrong' }],
+    ['an unknown username', { username: 'nobody', password: 'x' }],
+  ])('a 401 for %s ends an existing session by deleting its cookie', async (_label, body) => {
+    const cookie = await loginCookie();
+
+    const response = await loginWithCookie(body, cookie);
+
+    expect(response.status).toBe(401);
+    const cleared = clearingCookie(response);
+    expect(cleared).toBeDefined();
+    // Deleted with the same attributes it was set with, or the browser keeps the original.
+    expect(cleared).toMatch(/path=\//i);
+    expect(cleared).toMatch(/httponly/i);
+  });
+
+  it('a 400 (a malformed request, not a login attempt) leaves an existing session alone', async () => {
+    const cookie = await loginCookie();
+
+    const response = await loginWithCookie({ username: 'admin' }, cookie);
+
+    expect(response.status).toBe(400);
+    expect(response.headers.getSetCookie()).toEqual([]);
+  });
+
   it.each([
     ['missing password', { username: 'admin' }],
     ['missing username', { password: 'admin123' }],
