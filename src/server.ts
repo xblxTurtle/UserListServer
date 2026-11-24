@@ -6,8 +6,9 @@ import { expressMiddleware } from '@as-integrations/express5';
 import cors from 'cors';
 import express from 'express';
 import { createAuthRouter } from './auth/authRouter.ts';
+import { requireSession } from './auth/requireSession.ts';
 import type { CredentialStore } from './auth/CredentialStore.ts';
-import type { SessionConfig } from './auth/session.ts';
+import { createSessionReader, type SessionConfig } from './auth/session.ts';
 import type { AppContext } from './context.ts';
 import { resolvers } from './schema/resolvers.ts';
 import { typeDefs } from './schema/typeDefs.ts';
@@ -24,7 +25,7 @@ export interface ServerOptions {
   users: UserRepository;
   /** Checked by POST /api/login. */
   credentials: CredentialStore;
-  /** Session cookie settings for POST /api/login and GET /api/session. */
+  /** Session cookie settings for the auth routes and the session check on /graphql. */
   session: SessionConfig;
 }
 
@@ -41,7 +42,8 @@ export async function startServer({
   session,
 }: ServerOptions): Promise<RunningServer> {
   // Created first: it throws on a bad session secret before anything starts.
-  const authRouter = createAuthRouter(credentials, session);
+  const getSession = createSessionReader(session);
+  const authRouter = createAuthRouter(credentials, getSession);
 
   const app = express();
   const httpServer = http.createServer(app);
@@ -56,11 +58,14 @@ export async function startServer({
 
   app.use(
     GRAPHQL_PATH,
-    // Any origin for now, same as startStandaloneServer. Restrict this before using cookies.
+    // Any origin, without credentials. The UI reaches /graphql same-origin through its Vite proxy.
+    // Before the session check, so CORS preflights (which carry no cookie) are answered.
     cors<cors.CorsRequest>(),
+    requireSession(getSession),
     express.json(),
     expressMiddleware(server, {
-      context: async () => ({ users }),
+      // requireSession has already rejected requests without a session.
+      context: async ({ res }) => ({ users, username: res.locals.username as string }),
     }),
   );
 

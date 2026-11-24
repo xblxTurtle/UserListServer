@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { inMemoryCredentialStore } from './auth/inMemoryCredentialStore.ts';
 import { SESSION_COOKIE_NAME, SESSION_TTL_SECONDS } from './auth/session.ts';
+import { resolvers } from './schema/resolvers.ts';
 import { API_PATH, startServer, type RunningServer } from './server.ts';
 import { InMemoryUserRepository } from './users/InMemoryUserRepository.ts';
 import { seedUsers } from './users/seed.ts';
@@ -25,7 +26,37 @@ afterEach(async () => {
   await server.stop();
 });
 
-function post(body: unknown, headers: Record<string, string> = {}) {
+/** `name=value` of the session cookie, ready to send back in a Cookie header. */
+function sessionCookie(response: Response): string {
+  const header = response.headers.getSetCookie().find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=`));
+  assert(header !== undefined, 'no session cookie was set');
+  return header.split(';')[0];
+}
+
+/** Logs in as admin on the given server and returns its session cookie. */
+async function loginCookie(target: RunningServer = server): Promise<string> {
+  return sessionCookie(
+    await fetch(new URL(`${API_PATH}/login`, target.url), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'admin123' }),
+    }),
+  );
+}
+
+// Logged in lazily on the first post() of a test, because hashing makes each login slow.
+let adminCookie: string | undefined;
+beforeEach(() => {
+  adminCookie = undefined;
+});
+
+/** A GraphQL POST as the logged-in admin. Use postWithoutSession for anonymous requests. */
+async function post(body: unknown, headers: Record<string, string> = {}) {
+  adminCookie ??= await loginCookie();
+  return postWithoutSession(body, { cookie: adminCookie, ...headers });
+}
+
+function postWithoutSession(body: unknown, headers: Record<string, string> = {}) {
   return fetch(server.url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
@@ -101,6 +132,128 @@ describe('HTTP server', () => {
   });
 });
 
+describe('GraphQL authentication', () => {
+  const UNAUTHENTICATED = {
+    errors: [{ message: 'Not logged in', extensions: { code: 'UNAUTHENTICATED' } }],
+  };
+
+  it('returns 401 with a GraphQL error and runs no resolver when there is no session', async () => {
+    const list = vi.spyOn(repo, 'list');
+
+    const response = await postWithoutSession({ query: '{ users { id } }' });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('content-type')).toMatch(/^application\/json/);
+    expect(await response.json()).toEqual(UNAUTHENTICATED);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 for mutations too, and changes nothing', async () => {
+    const response = await postWithoutSession({
+      query: 'mutation { createUser(input: { firstName: "Eve", lastName: "X", email: "eve@example.com", role: "admin" }) { id } }',
+    });
+
+    expect(response.status).toBe(401);
+    expect(await repo.list()).toHaveLength(seedUsers.length);
+  });
+
+  it('returns 401 for a tampered session cookie', async () => {
+    const cookie = await loginCookie();
+
+    // Replaces the end of the seal, which breaks its signature.
+    const response = await postWithoutSession(
+      { query: '{ users { id } }' },
+      { cookie: `${cookie.slice(0, -4)}AAAA` },
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it('returns 401 once the session has expired', async () => {
+    const cookie = await loginCookie();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + SESSION_TTL_SECONDS * 1000);
+
+    const response = await postWithoutSession({ query: '{ users { id } }' }, { cookie });
+
+    expect(response.status).toBe(401);
+  });
+
+  it('answers with a valid session', async () => {
+    const response = await postWithoutSession({ query: '{ users { id } }' }, { cookie: await loginCookie() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.users).toHaveLength(seedUsers.length);
+  });
+
+  it('returns 401 for a GET query without a session', async () => {
+    const url = new URL(server.url);
+    url.searchParams.set('query', '{ users { id } }');
+
+    const response = await fetch(url, {
+      headers: { accept: 'application/json', 'apollo-require-preflight': 'true' },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual(UNAUTHENTICATED);
+  });
+
+  it('lets CORS preflight requests through without a session', async () => {
+    const response = await fetch(server.url, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'http://localhost:5173',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('access-control-allow-origin')).not.toBeNull();
+  });
+
+  it('serves the Sandbox landing page without a session', async () => {
+    const response = await fetch(server.url, { headers: { accept: 'text/html' } });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/^text\/html/);
+  });
+
+  it('never returns data to a browser-style GET without a session', async () => {
+    const url = new URL(server.url);
+    url.searchParams.set('query', '{ users { email } }');
+
+    const response = await fetch(url, {
+      headers: { accept: 'text/html', 'apollo-require-preflight': 'true' },
+    });
+
+    expect(await response.text()).not.toContain(seedUsers[0].email);
+  });
+
+  it('gives resolvers the logged-in username through the context', async () => {
+    const users = vi.spyOn(resolvers.Query, 'users');
+    // Started after the spy, so the schema is built with it.
+    const spied = await startServer({
+      port: 0,
+      users: repo,
+      credentials: inMemoryCredentialStore,
+      session: SESSION,
+    });
+    try {
+      await fetch(spied.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: await loginCookie(spied) },
+        body: JSON.stringify({ query: '{ users { id } }' }),
+      });
+
+      expect(users).toHaveBeenCalledOnce();
+      expect(users.mock.calls[0][2]).toMatchObject({ username: 'admin' });
+    } finally {
+      await spied.stop();
+    }
+  });
+});
+
 describe('auth routes', () => {
   function login(body: unknown) {
     return fetch(new URL(`${API_PATH}/login`, server.url), {
@@ -114,13 +267,6 @@ describe('auth routes', () => {
     return fetch(new URL(`${API_PATH}/session`, server.url), {
       headers: cookie === undefined ? {} : { cookie },
     });
-  }
-
-  /** `name=value` of the session cookie, ready to send back in a Cookie header. */
-  function sessionCookie(response: Response): string {
-    const header = response.headers.getSetCookie().find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=`));
-    assert(header !== undefined, 'no session cookie was set');
-    return header.split(';')[0];
   }
 
   it('POST /api/login with valid credentials returns 200, the username and a session cookie', async () => {
@@ -247,13 +393,7 @@ describe('auth routes', () => {
       session: { ...SESSION, secret: 'another-session-secret-of-32-characters!' },
     });
     try {
-      const cookie = sessionCookie(
-        await fetch(new URL(`${API_PATH}/login`, other.url), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ username: 'admin', password: 'admin123' }),
-        }),
-      );
+      const cookie = await loginCookie(other);
 
       expect((await getSession(cookie)).status).toBe(401);
     } finally {

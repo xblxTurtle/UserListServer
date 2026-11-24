@@ -42,7 +42,7 @@ beforeEach(() => {
 async function run(query: string, variables?: Record<string, unknown>) {
   const response = await server.executeOperation(
     { query, variables },
-    { contextValue: { users: repo } },
+    { contextValue: { users: repo, username: 'admin' } },
   );
   assert(response.body.kind === 'single');
   return response.body.singleResult;
@@ -295,22 +295,22 @@ describe('what resolvers return', () => {
   const apiUser = { __typename: 'User' };
 
   it('users converts every user', async () => {
-    const result = await Query.users({}, {}, { users: repo });
+    const result = await Query.users({}, {}, { users: repo, username: 'admin' });
     expect(result).toStrictEqual(seedUsers.map((user) => ({ ...apiUser, ...user })));
   });
 
   it('user converts the user', async () => {
-    const result = await Query.user({}, { id }, { users: repo });
+    const result = await Query.user({}, { id }, { users: repo, username: 'admin' });
     expect(result).toStrictEqual({ ...apiUser, ...seedUsers[1] });
   });
 
   it('createUser converts the created user', async () => {
-    const result = await Mutation.createUser({}, { input: validCreateInput }, { users: repo });
+    const result = await Mutation.createUser({}, { input: validCreateInput }, { users: repo, username: 'admin' });
     expect(result).toMatchObject(apiUser);
   });
 
   it('updateUser converts the updated user', async () => {
-    const result = await Mutation.updateUser({}, { id, input: {} }, { users: repo });
+    const result = await Mutation.updateUser({}, { id, input: {} }, { users: repo, username: 'admin' });
     expect(result).toMatchObject(apiUser);
   });
 });

@@ -4,9 +4,8 @@ import express, {
   type Response,
   type Router,
 } from 'express';
-import { getIronSession, nodeCookies } from 'iron-session';
 import type { CredentialStore } from './CredentialStore.ts';
-import { sessionOptions, type SessionConfig, type SessionData } from './session.ts';
+import type { SessionReader } from './session.ts';
 
 /**
  * REST auth routes, mounted under `API_PATH` (`/api`) in server.ts, so the full paths are
@@ -14,15 +13,8 @@ import { sessionOptions, type SessionConfig, type SessionData } from './session.
  * - `POST /login` with JSON `{ username, password }`: 200 `{ username }` and a
  *   session cookie, 401 for wrong credentials, 400 for a malformed body.
  * - `GET /session`: 200 `{ username }`, or 401 without a valid session.
- *
- * Throws at creation if the session secret is too short, so a bad config
- * stops startup instead of failing every request.
  */
-export function createAuthRouter(credentials: CredentialStore, session: SessionConfig): Router {
-  const options = sessionOptions(session);
-  const getSession = (req: Request, res: Response) =>
-    getIronSession<SessionData>(nodeCookies(req, res), options);
-
+export function createAuthRouter(credentials: CredentialStore, getSession: SessionReader): Router {
   const router = express.Router();
 
   // JSON parsing on this route only, so the router doesn't parse other paths' bodies.

@@ -1,4 +1,5 @@
-import type { SessionOptions } from 'iron-session';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { getIronSession, nodeCookies, type IronSession, type SessionOptions } from 'iron-session';
 
 /** What the encrypted session cookie holds. Empty when nobody is logged in. */
 export interface SessionData {
@@ -42,4 +43,16 @@ export function sessionOptions({ secret, secure }: SessionConfig): SessionOption
       maxAge: SESSION_TTL_SECONDS,
     },
   };
+}
+
+/** Reads (and can save) the session of one request. */
+export type SessionReader = (req: IncomingMessage, res: ServerResponse) => Promise<IronSession<SessionData>>;
+
+/**
+ * Builds the reader that the auth routes and the GraphQL session check share.
+ * Throws at once if the secret is too short, so a bad config stops startup.
+ */
+export function createSessionReader(config: SessionConfig): SessionReader {
+  const options = sessionOptions(config);
+  return (req, res) => getIronSession<SessionData>(nodeCookies(req, res), options);
 }
