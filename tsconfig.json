@@ -13,5 +13,5 @@
     "noUnusedParameters": true,
     "skipLibCheck": true
   },
-  "include": ["src", "codegen.ts"]
+  "include": ["src", "scripts", "codegen.ts"]
 }

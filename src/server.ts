@@ -5,6 +5,9 @@ import { ApolloServerPluginDrainHttpServer } from '@apollo/server/plugin/drainHt
 import { expressMiddleware } from '@as-integrations/express5';
 import cors from 'cors';
 import express from 'express';
+import { createAuthRouter } from './auth/authRouter.ts';
+import type { CredentialStore } from './auth/CredentialStore.ts';
+import type { SessionConfig } from './auth/session.ts';
 import type { AppContext } from './context.ts';
 import { resolvers } from './schema/resolvers.ts';
 import { typeDefs } from './schema/typeDefs.ts';
@@ -17,6 +20,10 @@ export interface ServerOptions {
   port: number;
   /** Shared by every request, so changes persist between requests. */
   users: UserRepository;
+  /** Checked by POST /login. */
+  credentials: CredentialStore;
+  /** Session cookie settings for POST /login and GET /session. */
+  session: SessionConfig;
 }
 
 export interface RunningServer {
@@ -25,7 +32,15 @@ export interface RunningServer {
   stop: () => Promise<void>;
 }
 
-export async function startServer({ port, users }: ServerOptions): Promise<RunningServer> {
+export async function startServer({
+  port,
+  users,
+  credentials,
+  session,
+}: ServerOptions): Promise<RunningServer> {
+  // Created first: it throws on a bad session secret before anything starts.
+  const authRouter = createAuthRouter(credentials, session);
+
   const app = express();
   const httpServer = http.createServer(app);
 
@@ -46,6 +61,9 @@ export async function startServer({ port, users }: ServerOptions): Promise<Runni
       context: async () => ({ users }),
     }),
   );
+
+  // POST /login and GET /session. No CORS yet: only same-origin callers can use them.
+  app.use(authRouter);
 
   try {
     await new Promise<void>((resolve, reject) => {

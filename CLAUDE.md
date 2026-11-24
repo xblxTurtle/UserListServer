@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is the backend of a full-stack "user list" app: a GraphQL API built with Apollo Server 5 and `graphql` 16, written in TypeScript. Clients can list users, get one user, create a user and update a user. Data is kept in memory and resets to the seed data on every restart. A database will replace the in-memory store later. The frontend lives in the sibling `../UserListUI`.
+This is the backend of a full-stack "user list" app: a GraphQL API built with Apollo Server 5 and `graphql` 16, written in TypeScript. Clients can list users, get one user, create a user and update a user. Two REST routes, `POST /login` and `GET /session`, handle authentication with an encrypted session cookie (iron-session). Data is kept in memory and resets to the seed data on every restart. A database will replace the in-memory store later. The frontend lives in the sibling `../UserListUI`.
 
 ## Commands
 
@@ -15,9 +15,14 @@ Node version is pinned in `.nvmrc` (v22.23.2). Run `nvm use` first.
 - `npm test`: run all Vitest tests once
 - `npm run codegen`: regenerate types after editing `typeDefs.graphql`
 - `npm run codegen:check`: fail, without writing, if the generated types are out of date
-- `npm run typecheck`: `codegen:check`, then `tsc --noEmit`
+- `npm run typecheck`: `codegen:check`, then `tsc --noEmit` (covers `src/` and `scripts/`)
+- `npm run hash-password -- <password>`: print a hash to paste into the list in `src/auth/inMemoryCredentialStore.ts`
 
-`PORT` overrides the default port 4000. An invalid value stops startup with exit code 1.
+Environment variables:
+
+- `PORT` overrides the default port 4000. An invalid value stops startup with exit code 1.
+- `SESSION_SECRET` encrypts the session cookie and must be at least 32 characters, or startup fails. When it is unset, a fixed development secret is used and a warning is printed. With `NODE_ENV=production` it is required.
+- `NODE_ENV=production` also marks the cookie `Secure`. Otherwise it is not, because browsers drop `Secure` cookies over plain-HTTP localhost.
 
 ## TypeScript without a build step
 
@@ -59,8 +64,8 @@ List every field in the mapper and never spread. A storage-only column then stay
 
 ## Structure
 
-- `src/index.ts`: entry point. Reads `PORT`, creates one `InMemoryUserRepository(seedUsers)` and calls `startServer`.
-- `src/server.ts`: `startServer({ port, users })` builds an Express 5 app, mounts Apollo at `/graphql` (`GRAPHQL_PATH`) with `cors()`, `express.json()` and `expressMiddleware` from `@as-integrations/express5`, and returns `{ url, stop }`. `url` is the full GraphQL endpoint. `ApolloServerPluginDrainHttpServer` makes `stop()` close the HTTP server too. The `context` function hands the same repository to every request. Other paths return Express's 404. Add non-GraphQL routes (such as auth) to the same `app`.
+- `src/index.ts`: entry point. Reads `PORT`, `SESSION_SECRET` and `NODE_ENV`, creates one `InMemoryUserRepository(seedUsers)` and calls `startServer` with it and `inMemoryCredentialStore`.
+- `src/server.ts`: `startServer({ port, users, credentials, session })` builds an Express 5 app, mounts Apollo at `/graphql` (`GRAPHQL_PATH`) with `cors()`, `express.json()` and `expressMiddleware` from `@as-integrations/express5`, and returns `{ url, stop }`. `url` is the full GraphQL endpoint. `ApolloServerPluginDrainHttpServer` makes `stop()` close the HTTP server too. The `context` function hands the same repository to every request. It also mounts the auth router at `/`. Other paths return Express's 404. Add other non-GraphQL routes to the same `app`.
 - `src/context.ts`: `AppContext`, which is `{ users: UserRepository }`.
 - `src/schema/typeDefs.graphql`: the schema (SDL). `typeDefs.ts` reads it from disk once at startup.
 - `src/schema/__generated__/types.ts`: generated API types.
@@ -72,6 +77,13 @@ List every field in the mapper and never spread. A storage-only column then stay
   - `UserRepository.ts`: the async storage interface (`list`, `getById`, `create`, `update`).
   - `InMemoryUserRepository.ts`: implements it with a `Map`.
   - `seed.ts`: 10 sample users.
+- `src/auth/`: login and sessions. It is separate from `src/users/` and must never import from it: a credential is who may log in, not a user in the list.
+  - `CredentialStore.ts`: the async interface, `verify(username, password): Promise<boolean>`.
+  - `inMemoryCredentialStore.ts`: the hardcoded logins (`{ username, passwordHash }`) and the store, in one module. The logins are stored as precomputed hashes only, with no plaintext passwords in source. The store is a plain object, `inMemoryCredentialStore`, that implements `CredentialStore` over a `Map`. For an unknown username it still verifies against a dummy hash, so response times don't reveal which usernames exist.
+  - `password.ts`: `hashPassword` and `verifyPassword`, using async `node:crypto` scrypt with a random salt, stored as `scrypt$<salt>$<hash>` (base64url) and compared with `timingSafeEqual`. A malformed hash verifies as `false` and never throws.
+  - `session.ts`: `SessionData` (`{ username? }`), `SessionConfig` (`{ secret, secure }`) and `sessionOptions()`, which rejects secrets under 32 characters.
+  - `authRouter.ts`: `createAuthRouter(credentials, session)`. `express.json()` is applied to `/login` only.
+- `scripts/hash-password.ts`: CLI behind `npm run hash-password`.
 
 Resolvers depend only on the `UserRepository` interface. To add a database, write another implementation and pass it to `startServer` in `index.ts`. The schema and resolvers stay the same. If the stored shape changes, update `User.ts` and the mapper.
 
@@ -84,6 +96,15 @@ Resolvers depend only on the `UserRepository` interface. To add a database, writ
 - `createdAt` and `updatedAt` are ISO 8601 strings. `update` always sets a new `updatedAt`, even when the input is empty.
 - The repository returns copies, never stored objects, so callers cannot change the store by accident.
 - `update` changes only the fields that were provided. A field set to `undefined` is skipped. The mapper also leaves omitted fields out entirely (`omitUndefined`), because a database might write `undefined` as NULL.
+
+## Auth rules
+
+- `POST /login` takes JSON `{ username, password }`. It returns 200 `{ username }` and sets the `userlist_session` cookie when the credentials match, 401 `{ error }` when they don't (wrong password, unknown username or empty strings), and 400 `{ error }` when either field is missing or not a string, or the body isn't a JSON object. Unparseable JSON also gets a JSON 400, from the router's error handler.
+- `GET /session` returns 200 `{ username }` for a valid cookie, and 401 `{ error }` when the cookie is missing, tampered with, sealed with another secret or expired.
+- The cookie is `HttpOnly`, `SameSite=Lax`, `Path=/` and `Max-Age=300`. The session lasts 5 minutes from login and is never renewed: `/session` never calls `save()`.
+- Iron accepts a seal for 60 seconds past its `ttl` to allow for clock skew, so `sessionOptions` sets the seal `ttl` to 300 − 60. The server then rejects the cookie at exactly 5 minutes, the same moment the browser drops it. Keep the two in step if the TTL changes.
+- Call `session.save()` before sending the response, or the `Set-Cookie` header is lost.
+- Usernames are matched exactly (case-sensitive). The session holds only the username.
 
 ## Validation and errors
 
@@ -99,12 +120,14 @@ Resolvers depend only on the `UserRepository` interface. To add a database, writ
 - `src/users/InMemoryUserRepository.test.ts`: tests the repository directly.
 - `src/api/userMapper.test.ts`: tests the conversions, including that storage-only and omitted fields are dropped. Its `@ts-expect-error` lines are checked by `npm run typecheck`, not by `npm test`.
 - `src/schema/resolvers.test.ts`: runs real operations through `ApolloServer.executeOperation` with a new repository per test. Narrow the result with `assert(response.body.kind === 'single')`. It also checks what reaches the repository, and calls resolvers directly to check that results are converted.
-- `src/server.test.ts`: starts a real server per test with `startServer({ port: 0, ... })` and sends requests with `fetch`. It covers HTTP status codes, routing (`/graphql` only), CORS and the context.
+- `src/server.test.ts`: starts a real server per test with `startServer({ port: 0, ... })` and sends requests with `fetch`. It covers HTTP status codes, routing, CORS, the context and the auth routes. Node's `fetch` does not keep cookies, so the auth tests read `headers.getSetCookie()` and send the cookie back by hand. The expiry tests use `vi.useFakeTimers({ toFake: ['Date'] })`. Fake only `Date`, because faking timers hangs `fetch`.
+- `src/auth/password.test.ts` and `src/auth/inMemoryCredentialStore.test.ts`: test hashing and the store. The store is a single module-level object, so its tests and the auth tests in `server.test.ts` use the hardcoded logins (`admin` / `admin123`, `demo` / `demo123`). These plaintext passwords appear only in tests.
 - New behavior is written test-first: add the tests, confirm they fail, then implement.
 
 ## Known limitations
 
-- CORS allows any origin (`cors()` with no options). Restrict `origin` (and set `credentials: true`) before using cookies.
+- CORS allows any origin on `/graphql` (`cors()` with no options). The auth routes have no CORS at all, so the UI on `:5173` cannot call them with credentials yet. Add CORS with a fixed `origin` and `credentials: true` (or a Vite proxy) before the UI uses login.
+- `/graphql` is not protected by the session yet. There is no logout route.
 - Typecheck cannot catch these changes, so check them by hand and with tests:
   - a new optional argument that a resolver ignores, or any new argument on a `User` field (a required operation argument is caught only by the direct resolver calls in `resolvers.test.ts`);
   - a new Subscription type, until it is added to `AppResolvers`;
