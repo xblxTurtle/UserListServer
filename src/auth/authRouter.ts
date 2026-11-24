@@ -9,7 +9,8 @@ import type { CredentialStore } from './CredentialStore.ts';
 import { sessionOptions, type SessionConfig, type SessionData } from './session.ts';
 
 /**
- * REST auth routes:
+ * REST auth routes, mounted under `API_PATH` (`/api`) in server.ts, so the full paths are
+ * `/api/login` and `/api/session`:
  * - `POST /login` with JSON `{ username, password }`: 200 `{ username }` and a
  *   session cookie, 401 for wrong credentials, 400 for a malformed body.
  * - `GET /session`: 200 `{ username }`, or 401 without a valid session.

@@ -2,7 +2,7 @@ import assert from 'node:assert';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { inMemoryCredentialStore } from './auth/inMemoryCredentialStore.ts';
 import { SESSION_COOKIE_NAME, SESSION_TTL_SECONDS } from './auth/session.ts';
-import { startServer, type RunningServer } from './server.ts';
+import { API_PATH, startServer, type RunningServer } from './server.ts';
 import { InMemoryUserRepository } from './users/InMemoryUserRepository.ts';
 import { seedUsers } from './users/seed.ts';
 
@@ -103,7 +103,7 @@ describe('HTTP server', () => {
 
 describe('auth routes', () => {
   function login(body: unknown) {
-    return fetch(new URL('/login', server.url), {
+    return fetch(new URL(`${API_PATH}/login`, server.url), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -111,7 +111,7 @@ describe('auth routes', () => {
   }
 
   function getSession(cookie?: string) {
-    return fetch(new URL('/session', server.url), {
+    return fetch(new URL(`${API_PATH}/session`, server.url), {
       headers: cookie === undefined ? {} : { cookie },
     });
   }
@@ -123,7 +123,7 @@ describe('auth routes', () => {
     return header.split(';')[0];
   }
 
-  it('POST /login with valid credentials returns 200, the username and a session cookie', async () => {
+  it('POST /api/login with valid credentials returns 200, the username and a session cookie', async () => {
     const response = await login({ username: 'admin', password: 'admin123' });
 
     expect(response.status).toBe(200);
@@ -152,7 +152,7 @@ describe('auth routes', () => {
     ['wrong password', { username: 'admin', password: 'nope' }],
     ['unknown username', { username: 'nobody', password: 'admin123' }],
     ['empty values', { username: '', password: '' }],
-  ])('POST /login returns 401 and no cookie for %s', async (_label, body) => {
+  ])('POST /api/login returns 401 and no cookie for %s', async (_label, body) => {
     const response = await login(body);
 
     expect(response.status).toBe(401);
@@ -164,21 +164,21 @@ describe('auth routes', () => {
     ['missing username', { password: 'admin123' }],
     ['non-string values', { username: 1, password: true }],
     ['an array body', ['admin', 'admin123']],
-  ])('POST /login returns 400 and no cookie for %s', async (_label, body) => {
+  ])('POST /api/login returns 400 and no cookie for %s', async (_label, body) => {
     const response = await login(body);
 
     expect(response.status).toBe(400);
     expect(response.headers.getSetCookie()).toEqual([]);
   });
 
-  it('POST /login returns 400 when there is no JSON body', async () => {
-    const response = await fetch(new URL('/login', server.url), { method: 'POST' });
+  it('POST /api/login returns 400 when there is no JSON body', async () => {
+    const response = await fetch(new URL(`${API_PATH}/login`, server.url), { method: 'POST' });
 
     expect(response.status).toBe(400);
   });
 
-  it('POST /login returns a JSON 400 for malformed JSON', async () => {
-    const response = await fetch(new URL('/login', server.url), {
+  it('POST /api/login returns a JSON 400 for malformed JSON', async () => {
+    const response = await fetch(new URL(`${API_PATH}/login`, server.url), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{bad',
@@ -188,13 +188,13 @@ describe('auth routes', () => {
     expect(await response.json()).toEqual({ error: 'Request body must be valid JSON' });
   });
 
-  it('GET /session returns 401 when there is no session cookie', async () => {
+  it('GET /api/session returns 401 when there is no session cookie', async () => {
     const response = await getSession();
 
     expect(response.status).toBe(401);
   });
 
-  it('GET /session returns 200 and the username after login', async () => {
+  it('GET /api/session returns 200 and the username after login', async () => {
     const cookie = sessionCookie(await login({ username: 'admin', password: 'admin123' }));
 
     const response = await getSession(cookie);
@@ -203,7 +203,7 @@ describe('auth routes', () => {
     expect(await response.json()).toEqual({ username: 'admin' });
   });
 
-  it('GET /session does not renew the cookie (TTL is fixed from login)', async () => {
+  it('GET /api/session does not renew the cookie (TTL is fixed from login)', async () => {
     const cookie = sessionCookie(await login({ username: 'admin', password: 'admin123' }));
 
     const response = await getSession(cookie);
@@ -211,7 +211,7 @@ describe('auth routes', () => {
     expect(response.headers.getSetCookie()).toEqual([]);
   });
 
-  it('GET /session returns 401 for a tampered cookie', async () => {
+  it('GET /api/session returns 401 for a tampered cookie', async () => {
     const cookie = sessionCookie(await login({ username: 'admin', password: 'admin123' }));
 
     const response = await getSession(`${cookie.slice(0, -4)}AAAA`);
@@ -219,7 +219,7 @@ describe('auth routes', () => {
     expect(response.status).toBe(401);
   });
 
-  it('GET /session still returns 200 just before 5 minutes have passed', async () => {
+  it('GET /api/session still returns 200 just before 5 minutes have passed', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const cookie = sessionCookie(await login({ username: 'admin', password: 'admin123' }));
 
@@ -229,7 +229,7 @@ describe('auth routes', () => {
     expect(response.status).toBe(200);
   });
 
-  it('GET /session returns 401 once 5 minutes have passed', async () => {
+  it('GET /api/session returns 401 once 5 minutes have passed', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const cookie = sessionCookie(await login({ username: 'admin', password: 'admin123' }));
 
@@ -248,7 +248,7 @@ describe('auth routes', () => {
     });
     try {
       const cookie = sessionCookie(
-        await fetch(new URL('/login', other.url), {
+        await fetch(new URL(`${API_PATH}/login`, other.url), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ username: 'admin', password: 'admin123' }),
@@ -259,6 +259,15 @@ describe('auth routes', () => {
     } finally {
       await other.stop();
     }
+  });
+
+  it.each([
+    ['POST', '/login'],
+    ['GET', '/session'],
+  ])('%s %s at the root returns 404: auth routes live under /api only', async (method, path) => {
+    const response = await fetch(new URL(path, server.url), { method });
+
+    expect(response.status).toBe(404);
   });
 
   it('refuses to start with a session secret shorter than 32 characters', async () => {

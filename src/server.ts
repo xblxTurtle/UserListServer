@@ -14,15 +14,17 @@ import { typeDefs } from './schema/typeDefs.ts';
 import type { UserRepository } from './users/UserRepository.ts';
 
 export const GRAPHQL_PATH = '/graphql';
+/** Prefix of every REST route. */
+export const API_PATH = '/api';
 
 export interface ServerOptions {
   /** Port to listen on; 0 picks a free port. */
   port: number;
   /** Shared by every request, so changes persist between requests. */
   users: UserRepository;
-  /** Checked by POST /login. */
+  /** Checked by POST /api/login. */
   credentials: CredentialStore;
-  /** Session cookie settings for POST /login and GET /session. */
+  /** Session cookie settings for POST /api/login and GET /api/session. */
   session: SessionConfig;
 }
 
@@ -62,8 +64,8 @@ export async function startServer({
     }),
   );
 
-  // POST /login and GET /session. No CORS yet: only same-origin callers can use them.
-  app.use(authRouter);
+  // POST /api/login and GET /api/session. No CORS: the UI reaches them same-origin through its Vite proxy.
+  app.use(API_PATH, authRouter);
 
   try {
     await new Promise<void>((resolve, reject) => {
